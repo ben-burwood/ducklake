@@ -119,6 +119,8 @@ public:
 	}
 	void SetConfigOption(const DuckLakeConfigOption &option);
 
+	void SetCommitMessage(const DuckLakeSnapshotCommit &option);
+
 	string GetDefaultSchemaName();
 
 	bool HasLocalDeletes(TableIndex table_id);
@@ -181,6 +183,7 @@ private:
 
 private:
 	DuckLakeCatalog &ducklake_catalog;
+	DuckLakeSnapshotCommit commit_info;
 	DatabaseInstance &db;
 	unique_ptr<DuckLakeMetadataManager> metadata_manager;
 	mutex connection_lock;
@@ -192,6 +195,7 @@ private:
 	//! New tables added by this transaction
 	case_insensitive_map_t<unique_ptr<DuckLakeCatalogSet>> new_tables;
 	set<TableIndex> dropped_tables;
+	set<TableIndex> renamed_tables;
 	set<TableIndex> dropped_views;
 	unordered_map<string, DataFileIndex> dropped_files;
 	set<TableIndex> tables_deleted_from;

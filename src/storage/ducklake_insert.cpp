@@ -621,7 +621,7 @@ PhysicalOperator &DuckLakeInsert::PlanCopyForInsert(ClientContext &context, Phys
 	physical_copy.names = std::move(copy_options.names);
 	physical_copy.expected_types = std::move(copy_options.expected_types);
 	physical_copy.parallel = true;
-	physical_copy.hive_file_pattern = !is_encrypted ? true : false;
+	physical_copy.hive_file_pattern = copy_input.catalog.UseHiveFilePattern(!is_encrypted);
 	if (plan) {
 		physical_copy.children.push_back(*plan);
 	}
@@ -661,7 +661,7 @@ PhysicalOperator &DuckLakeCatalog::PlanInsert(ClientContext &context, PhysicalPl
 	if (op.return_chunk) {
 		throw BinderException("RETURNING clause not yet supported for insertion into DuckLake table");
 	}
-	if (op.action_type != OnConflictAction::THROW) {
+	if (op.on_conflict_info.action_type != OnConflictAction::THROW) {
 		throw BinderException("ON CONFLICT clause not yet supported for insertion into DuckLake table");
 	}
 	if (!op.column_index_map.empty()) {

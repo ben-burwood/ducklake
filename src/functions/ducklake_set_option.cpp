@@ -69,6 +69,10 @@ static unique_ptr<FunctionData> DuckLakeSetOptionBind(ClientContext &context, Ta
 	} else if (option == "data_inlining_row_limit") {
 		auto data_inlining_row_limit = val.DefaultCastAs(LogicalType::UBIGINT).GetValue<idx_t>();
 		value = to_string(data_inlining_row_limit);
+	} else if (option == "require_commit_message") {
+		value = val.GetValue<bool>() ? "true" : "false";
+	} else if (option == "hive_file_pattern") {
+		value = val.GetValue<bool>() ? "true" : "false";
 	} else {
 		throw NotImplementedException("Unsupported option %s", option);
 	}
@@ -86,17 +90,17 @@ static unique_ptr<FunctionData> DuckLakeSetOptionBind(ClientContext &context, Ta
 	}
 	if (!table.empty()) {
 		// find the scope
-		auto table_entry =
+		auto table_catalog_entry =
 		    catalog.GetEntry<TableCatalogEntry>(context, schema, table, OnEntryNotFound::THROW_EXCEPTION);
-		auto &ducklake_table = table_entry->Cast<DuckLakeTableEntry>();
+		auto &ducklake_table = table_catalog_entry->Cast<DuckLakeTableEntry>();
 		config_option.table_id = ducklake_table.GetTableId();
 		if (config_option.table_id.IsTransactionLocal()) {
 			throw NotImplementedException("Settings cannot be set for transaction-local tables");
 		}
 	} else if (!schema.empty()) {
 		// find the scope
-		auto schema_entry = catalog.GetSchema(context, schema, OnEntryNotFound::THROW_EXCEPTION);
-		auto &ducklake_schema = schema_entry->Cast<DuckLakeSchemaEntry>();
+		auto schema_catalog_entry = catalog.GetSchema(context, schema, OnEntryNotFound::THROW_EXCEPTION);
+		auto &ducklake_schema = schema_catalog_entry->Cast<DuckLakeSchemaEntry>();
 		config_option.schema_id = ducklake_schema.GetSchemaId();
 		if (config_option.schema_id.IsTransactionLocal()) {
 			throw NotImplementedException("Settings cannot be set for transaction-local schemas");

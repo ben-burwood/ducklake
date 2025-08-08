@@ -85,8 +85,16 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 			HandleDuckLakeOption(options, entry.first, entry.second);
 		}
 	}
+	options.access_mode = attach_options.access_mode;
+	bool is_create_if_not_exists_set = false;
 	for (auto &entry : attach_options.options) {
+		if (StringUtil::Lower(entry.first) == "create_if_not_exists") {
+			is_create_if_not_exists_set = true;
+		}
 		HandleDuckLakeOption(options, entry.first, entry.second);
+	}
+	if (options.access_mode == AccessMode::READ_ONLY && !is_create_if_not_exists_set) {
+		options.create_if_not_exists = false;
 	}
 	if (options.metadata_database.empty()) {
 		options.metadata_database = "__ducklake_metadata_" + name;
@@ -98,7 +106,6 @@ static unique_ptr<Catalog> DuckLakeAttach(optional_ptr<StorageExtensionInfo> sto
 		attach_options.access_mode = AccessMode::READ_ONLY;
 		db.SetReadOnlyDatabase();
 	}
-	options.access_mode = attach_options.access_mode;
 	return make_uniq<DuckLakeCatalog>(db, std::move(options));
 }
 

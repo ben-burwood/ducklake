@@ -114,6 +114,7 @@ struct DuckLakeCopyOptions {
 	optional_idx file_size_bytes;
 	bool rotate;
 	CopyFunctionReturnType return_type;
+	bool hive_file_pattern;
 
 	bool partition_output;
 	bool write_partition_columns;

@@ -150,10 +150,10 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 			string version = tag.value;
 			if (version != "0.3-dev1" && !options.migrate_if_required) {
 				// Throw when Loading the Ducklake if a Migration is required and migrate_if_required option is false
-				throw InvalidInputException(
-				    "DuckLake Extension requires a DuckLake Catalog version of 0.3-dev1 or higher, current version is %s "
-					"and migrate_if_required is set to false",
-				    version);
+				throw InvalidInputException("DuckLake Extension requires a DuckLake Catalog version of 0.3-dev1 or "
+				                            "higher, current version is %s "
+				                            "and migrate_if_required is set to false",
+				                            version);
 			}
 			if (version == "0.1") {
 				metadata_manager.MigrateV01();
@@ -186,13 +186,13 @@ void DuckLakeInitializer::LoadExistingDuckLake(DuckLakeTransaction &transaction)
 				throw NotImplementedException("Encrypted should be either true or false");
 			}
 		}
-		options.config_options.emplace(tag.key, tag.value);
+		options.config_options[tag.key] = tag.value;
 	}
 	for (auto &entry : metadata.schema_settings) {
-		options.schema_options[entry.schema_id].emplace(entry.tag.key, entry.tag.value);
+		options.schema_options[entry.schema_id][entry.tag.key] = entry.tag.value;
 	}
 	for (auto &entry : metadata.table_settings) {
-		options.table_options[entry.table_id].emplace(entry.tag.key, entry.tag.value);
+		options.table_options[entry.table_id][entry.tag.key] = entry.tag.value;
 	}
 }
 

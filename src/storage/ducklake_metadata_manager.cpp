@@ -51,7 +51,7 @@ void DuckLakeMetadataManager::InitializeDuckLake(bool has_explicit_schema, DuckL
 	initialize_query += StringUtil::Format(R"(
 CREATE TABLE {METADATA_CATALOG}.ducklake_metadata(key VARCHAR NOT NULL, value VARCHAR NOT NULL, scope VARCHAR, scope_id BIGINT);
 CREATE TABLE {METADATA_CATALOG}.ducklake_snapshot(snapshot_id BIGINT PRIMARY KEY, snapshot_time TIMESTAMPTZ, schema_version BIGINT, next_catalog_id BIGINT, next_file_id BIGINT);
-CREATE TABLE {METADATA_CATALOG}.ducklake_snapshot_changes(snapshot_id BIGINT PRIMARY KEY, changes_made VARCHAR);
+CREATE TABLE {METADATA_CATALOG}.ducklake_snapshot_changes(snapshot_id BIGINT PRIMARY KEY, changes_made VARCHAR, author VARCHAR, commit_message VARCHAR, commit_extra_info VARCHAR);
 CREATE TABLE {METADATA_CATALOG}.ducklake_schema(schema_id BIGINT PRIMARY KEY, schema_uuid UUID, begin_snapshot BIGINT, end_snapshot BIGINT, schema_name VARCHAR, path VARCHAR, path_is_relative BOOLEAN);
 CREATE TABLE {METADATA_CATALOG}.ducklake_table(table_id BIGINT, table_uuid UUID, begin_snapshot BIGINT, end_snapshot BIGINT, schema_id BIGINT, table_name VARCHAR, path VARCHAR, path_is_relative BOOLEAN);
 CREATE TABLE {METADATA_CATALOG}.ducklake_view(view_id BIGINT, view_uuid UUID, begin_snapshot BIGINT, end_snapshot BIGINT, schema_id BIGINT, view_name VARCHAR, dialect VARCHAR, sql VARCHAR, column_aliases VARCHAR);
@@ -71,7 +71,7 @@ CREATE TABLE {METADATA_CATALOG}.ducklake_inlined_data_tables(table_id BIGINT, ta
 CREATE TABLE {METADATA_CATALOG}.ducklake_column_mapping(mapping_id BIGINT, table_id BIGINT, type VARCHAR);
 CREATE TABLE {METADATA_CATALOG}.ducklake_name_mapping(mapping_id BIGINT, column_id BIGINT, source_name VARCHAR, target_field_id BIGINT, parent_column BIGINT, is_partition BOOLEAN);
 INSERT INTO {METADATA_CATALOG}.ducklake_snapshot VALUES (0, NOW(), 0, 1, 0);
-INSERT INTO {METADATA_CATALOG}.ducklake_snapshot_changes VALUES (0, 'created_schema:"main"');
+INSERT INTO {METADATA_CATALOG}.ducklake_snapshot_changes VALUES (0, 'created_schema:"main"',  NULL, NULL, NULL);
 INSERT INTO {METADATA_CATALOG}.ducklake_metadata (key, value) VALUES ('version', '0.3-dev1'), ('created_by', 'DuckDB %s'), ('data_path', %s), ('encrypted', '%s');
 INSERT INTO {METADATA_CATALOG}.ducklake_schema VALUES (0, UUID(), 0, NULL, 'main', 'main/', true);
 	)",
@@ -109,6 +109,9 @@ UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.2' WHERE key = 'versi
 void DuckLakeMetadataManager::MigrateV02() {
 	string migrate_query = R"(
 ALTER TABLE {METADATA_CATALOG}.ducklake_name_mapping ADD COLUMN is_partition BOOLEAN DEFAULT false;
+ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN author VARCHAR DEFAULT NULL;
+ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN commit_message VARCHAR DEFAULT NULL;
+ALTER TABLE {METADATA_CATALOG}.ducklake_snapshot_changes ADD COLUMN commit_extra_info VARCHAR DEFAULT NULL;
 UPDATE {METADATA_CATALOG}.ducklake_metadata SET value = '0.3-dev1' WHERE key = 'version';
 	)";
 	auto result = transaction.Query(migrate_query);
@@ -894,9 +897,16 @@ void DuckLakeMetadataManager::DropSchemas(DuckLakeSnapshot commit_snapshot, cons
 	FlushDrop(commit_snapshot, "ducklake_schema", "schema_id", ids);
 }
 
-void DuckLakeMetadataManager::DropTables(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids) {
+void DuckLakeMetadataManager::DropTables(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids, bool renamed) {
 	FlushDrop(commit_snapshot, "ducklake_table", "table_id", ids);
-	FlushDrop(commit_snapshot, "ducklake_partition_info", "table_id", ids);
+	if (renamed == false) {
+		FlushDrop(commit_snapshot, "ducklake_partition_info", "table_id", ids);
+		FlushDrop(commit_snapshot, "ducklake_column", "table_id", ids);
+		FlushDrop(commit_snapshot, "ducklake_column_tag", "table_id", ids);
+		FlushDrop(commit_snapshot, "ducklake_data_file", "table_id", ids);
+		FlushDrop(commit_snapshot, "ducklake_delete_file", "table_id", ids);
+		FlushDrop(commit_snapshot, "ducklake_tag", "object_id", ids);
+	}
 }
 
 void DuckLakeMetadataManager::DropViews(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids) {
@@ -1657,7 +1667,7 @@ void DuckLakeMetadataManager::WriteNewColumnMappings(DuckLakeSnapshot commit_sna
 
 void DuckLakeMetadataManager::InsertSnapshot(DuckLakeSnapshot commit_snapshot) {
 	auto result = transaction.Query(
-	    commit_snapshot,
+	    std::move(commit_snapshot),
 	    R"(INSERT INTO {METADATA_CATALOG}.ducklake_snapshot VALUES ({SNAPSHOT_ID}, NOW(), {SCHEMA_VERSION}, {NEXT_CATALOG_ID}, {NEXT_FILE_ID});)");
 	if (result->HasError()) {
 		result->GetErrorObject().Throw("Failed to write new snapshot to DuckLake: ");
@@ -1672,11 +1682,13 @@ string SQLStringOrNull(const string &str) {
 }
 
 void DuckLakeMetadataManager::WriteSnapshotChanges(DuckLakeSnapshot commit_snapshot,
-                                                   const SnapshotChangeInfo &change_info) {
+                                                   const SnapshotChangeInfo &change_info,
+                                                   const DuckLakeSnapshotCommit &commit_info) {
 	// insert the snapshot changes
-	auto query =
-	    StringUtil::Format(R"(INSERT INTO {METADATA_CATALOG}.ducklake_snapshot_changes VALUES ({SNAPSHOT_ID}, %s);)",
-	                       SQLStringOrNull(change_info.changes_made));
+	auto query = StringUtil::Format(
+	    R"(INSERT INTO {METADATA_CATALOG}.ducklake_snapshot_changes VALUES ({SNAPSHOT_ID}, %s, %s, %s, %s);)",
+	    SQLStringOrNull(change_info.changes_made), commit_info.author.ToSQLString(),
+	    commit_info.commit_message.ToSQLString(), commit_info.commit_extra_info.ToSQLString());
 	auto result = transaction.Query(commit_snapshot, query);
 	if (result->HasError()) {
 		result->GetErrorObject().Throw("Failed to write new snapshot to DuckLake:");
@@ -1766,36 +1778,77 @@ WHERE snapshot_id = (
 	return snapshot;
 }
 
+unordered_map<idx_t, DuckLakePartitionInfo> GetNewPartitions(const vector<DuckLakePartitionInfo> &old_partitions,
+                                                             const vector<DuckLakePartitionInfo> &new_partitions) {
+
+	unordered_map<idx_t, DuckLakePartitionInfo> new_partition_map;
+
+	for (auto &partition : new_partitions) {
+		new_partition_map[partition.table_id.index] = partition;
+	}
+
+	unordered_set<idx_t> old_partition_set;
+	for (auto &partition : old_partitions) {
+		old_partition_set.insert(partition.table_id.index);
+		if (new_partition_map.find(partition.table_id.index) != new_partition_map.end()) {
+			if (new_partition_map[partition.table_id.index] == partition) {
+				// If a new partition already exists in an old partition, it's a nop, we can remove it
+				new_partition_map.erase(partition.table_id.index);
+			}
+		}
+	}
+
+	vector<idx_t> partition_ids_to_erase;
+	for (auto &partition : new_partitions) {
+		if (old_partition_set.find(partition.table_id.index) == old_partition_set.end() && partition.fields.empty()) {
+			// If a map does not exist on the old partition and the partition has no fields, this is an reset over
+			// and empty partition definition, hence also a nop
+			partition_ids_to_erase.push_back(partition.table_id.index);
+		}
+	}
+	for (auto &id : partition_ids_to_erase) {
+		new_partition_map.erase(id);
+	}
+	return new_partition_map;
+}
+
 void DuckLakeMetadataManager::WriteNewPartitionKeys(DuckLakeSnapshot commit_snapshot,
                                                     const vector<DuckLakePartitionInfo> &new_partitions) {
 	if (new_partitions.empty()) {
 		return;
 	}
+	auto catalog = GetCatalogForSnapshot(commit_snapshot);
+
 	string old_partition_table_ids;
 	string new_partition_values;
 	string insert_partition_cols;
-	for (auto &partition : new_partitions) {
+
+	auto new_partition_map = GetNewPartitions(catalog.partitions, new_partitions);
+	if (new_partition_map.empty()) {
+		return;
+	}
+	for (auto &new_partition : new_partition_map) {
 		// set old partition data as no longer valid
 		if (!old_partition_table_ids.empty()) {
 			old_partition_table_ids += ", ";
 		}
-		old_partition_table_ids += to_string(partition.table_id.index);
-		if (!partition.id.IsValid()) {
+		old_partition_table_ids += to_string(new_partition.second.table_id.index);
+		if (!new_partition.second.id.IsValid()) {
 			// dropping partition data - we don't need to do anything
 			return;
 		}
-		auto partition_id = partition.id.GetIndex();
+		auto partition_id = new_partition.second.id.GetIndex();
 		if (!new_partition_values.empty()) {
 			new_partition_values += ", ";
 		}
 		new_partition_values +=
-		    StringUtil::Format(R"((%d, %d, {SNAPSHOT_ID}, NULL);)", partition_id, partition.table_id.index);
-		for (auto &field : partition.fields) {
+		    StringUtil::Format(R"((%d, %d, {SNAPSHOT_ID}, NULL))", partition_id, new_partition.second.table_id.index);
+		for (auto &field : new_partition.second.fields) {
 			if (!insert_partition_cols.empty()) {
 				insert_partition_cols += ", ";
 			}
 			insert_partition_cols +=
-			    StringUtil::Format("(%d, %d, %d, %d, %s)", partition_id, partition.table_id.index,
+			    StringUtil::Format("(%d, %d, %d, %d, %s)", partition_id, new_partition.second.table_id.index,
 			                       field.partition_key_index, field.field_id.index, SQLString(field.transform));
 		}
 	}
@@ -1989,8 +2042,9 @@ timestamp_tz_t GetTimestampTZFromRow(ClientContext &context, const T &row, idx_t
 }
 
 vector<DuckLakeSnapshotInfo> DuckLakeMetadataManager::GetAllSnapshots(const string &filter) {
+
 	auto res = transaction.Query(StringUtil::Format(R"(
-SELECT snapshot_id, snapshot_time, schema_version, changes_made
+SELECT snapshot_id, snapshot_time, schema_version, changes_made, author, commit_message, commit_extra_info
 FROM {METADATA_CATALOG}.ducklake_snapshot
 LEFT JOIN {METADATA_CATALOG}.ducklake_snapshot_changes USING (snapshot_id)
 %s %s
@@ -2002,13 +2056,16 @@ ORDER BY snapshot_id
 	}
 	auto context = transaction.context.lock();
 	vector<DuckLakeSnapshotInfo> snapshots;
+
 	for (auto &row : *res) {
 		DuckLakeSnapshotInfo snapshot_info;
 		snapshot_info.id = row.GetValue<idx_t>(0);
 		snapshot_info.time = GetTimestampTZFromRow(*context, row, 1);
 		snapshot_info.schema_version = row.GetValue<idx_t>(2);
 		snapshot_info.change_info.changes_made = row.IsNull(3) ? string() : row.GetValue<string>(3);
-
+		snapshot_info.author = row.iterator.chunk->GetValue(4, row.row);
+		snapshot_info.commit_message = row.iterator.chunk->GetValue(5, row.row);
+		snapshot_info.commit_extra_info = row.iterator.chunk->GetValue(6, row.row);
 		snapshots.push_back(std::move(snapshot_info));
 	}
 	return snapshots;

@@ -1,0 +1,71 @@
+# name: test/sql/partitioning/disable_hive_partitioning.test
+# description: Test option to disable subfolder creation for partitioning
+# group: [partitioning]
+
+require ducklake
+
+require parquet
+
+# partitioning based on a column
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/ducklake_partition_use_hive.db' AS ducklake (DATA_PATH '__TEST_DIR__/ducklake_partition_use_hive', METADATA_CATALOG 'ducklake_metadata')
+
+statement ok
+USE ducklake
+
+statement ok
+CREATE TABLE partitioned_tbl(part_key INTEGER, values VARCHAR);
+
+statement ok
+ALTER TABLE partitioned_tbl SET PARTITIONED BY (part_key);
+
+statement ok
+INSERT INTO partitioned_tbl SELECT i%2, concat('thisisastring_', i) FROM range(5) t(i)
+
+# This is partitioned
+query II
+FROM '__TEST_DIR__/ducklake_partition_use_hive/main/partitioned_tbl/part_key=0/*.parquet'
+----
+0	thisisastring_0
+0	thisisastring_2
+0	thisisastring_4
+
+statement ok
+CALL ducklake.set_option('hive_file_pattern', False)
+
+statement ok
+CREATE TABLE hiveless_partitioned_tbl(part_key INTEGER, values VARCHAR);
+
+statement ok
+ALTER TABLE hiveless_partitioned_tbl SET PARTITIONED BY (part_key);
+
+statement ok
+INSERT INTO hiveless_partitioned_tbl SELECT i%2, concat('thisisastring_', i) FROM range(5) t(i)
+
+statement error
+FROM '__TEST_DIR__/ducklake_partition_use_hive/main/hiveless_partitioned_tbl/part_key=0/*.parquet'
+----
+No files found that match the pattern
+
+# What if we now insert more data into our partitioned table
+statement ok
+INSERT INTO partitioned_tbl SELECT i%2, concat('thisisastring_', i) FROM range(5) t(i)
+
+# Data remains the same
+query II
+FROM '__TEST_DIR__/ducklake_partition_use_hive/main/partitioned_tbl/part_key=0/*.parquet'
+----
+0	thisisastring_0
+0	thisisastring_2
+0	thisisastring_4
+
+# But we can query it in its totality normally
+query II
+FROM partitioned_tbl where part_key = 0
+----
+0	thisisastring_0
+0	thisisastring_2
+0	thisisastring_4
+0	thisisastring_0
+0	thisisastring_2
+0	thisisastring_4

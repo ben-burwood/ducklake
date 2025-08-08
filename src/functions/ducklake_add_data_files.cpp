@@ -24,12 +24,15 @@ struct DuckLakeAddDataFilesData : public TableFunctionData {
 static unique_ptr<FunctionData> DuckLakeAddDataFilesBind(ClientContext &context, TableFunctionBindInput &input,
                                                          vector<LogicalType> &return_types, vector<string> &names) {
 	auto &catalog = BaseMetadataFunction::GetCatalog(context, input.inputs[0]);
-
 	string schema_name;
 	if (input.inputs[1].IsNull()) {
 		throw InvalidInputException("Table name cannot be NULL");
 	}
-	auto table_name = StringValue::Get(input.inputs[1]);
+	if (input.named_parameters.find("schema") != input.named_parameters.end()) {
+		schema_name = StringValue::Get(input.named_parameters["schema"]);
+	}
+	const auto table_name = StringValue::Get(input.inputs[1]);
+
 	auto entry =
 	    catalog.GetEntry<TableCatalogEntry>(context, schema_name, table_name, OnEntryNotFound::THROW_EXCEPTION);
 	auto &table = entry->Cast<DuckLakeTableEntry>();
@@ -48,7 +51,7 @@ static unique_ptr<FunctionData> DuckLakeAddDataFilesBind(ClientContext &context,
 		} else if (lower == "hive_partitioning") {
 			result->hive_partitioning =
 			    BooleanValue::Get(entry.second) ? HivePartitioningType::YES : HivePartitioningType::NO;
-		} else {
+		}  else if (lower != "schema") {
 			throw InternalException("Unknown named parameter %s for add_files", entry.first);
 		}
 	}
@@ -92,7 +95,8 @@ struct ParquetFileMetadata {
 	vector<unique_ptr<ParquetColumn>> columns;
 	unordered_map<idx_t, reference<ParquetColumn>> column_id_map;
 	optional_idx row_count;
-	optional_idx file_size;
+	optional_idx file_size_bytes;
+	optional_idx footer_size;
 };
 
 struct DuckLakeFileProcessor {
@@ -270,28 +274,9 @@ FROM parquet_metadata(%s)
 }
 
 void DuckLakeFileProcessor::ReadParquetFileMetadata(const string &glob) {
-	// use read_blob to get the file size
-	// FIXME: we should obtain the footer size as well at this point
+
 	auto result = transaction.Query(StringUtil::Format(R"(
-SELECT filename, size
-FROM read_blob(%s)
-)",
-	                                                   SQLString(glob)));
-	if (result->HasError()) {
-		result->GetErrorObject().Throw("Failed to add data files to DuckLake: ");
-	}
-	for (auto &row : *result) {
-		auto filename = row.GetValue<string>(0);
-		auto entry = parquet_files.find(filename);
-		if (entry == parquet_files.end()) {
-			throw InvalidInputException("Parquet file was returned by parquet_metadata, but not returned by "
-			                            "parquet_schema - did a Parquet file get added to a glob while processing?");
-		}
-		entry->second->file_size = row.GetValue<idx_t>(1);
-	}
-	// use parquet_file_metadata to get the num rows
-	result = transaction.Query(StringUtil::Format(R"(
-SELECT file_name, num_rows
+SELECT file_name, num_rows, footer_size, file_size_bytes
 FROM parquet_file_metadata(%s)
 )",
 	                                              SQLString(glob)));
@@ -306,6 +291,9 @@ FROM parquet_file_metadata(%s)
 			                            "parquet_schema - did a Parquet file get added to a glob while processing?");
 		}
 		entry->second->row_count = row.GetValue<idx_t>(1);
+		entry->second->footer_size = row.GetValue<idx_t>(2);
+		entry->second->file_size_bytes = row.GetValue<idx_t>(3);
+
 	}
 }
 
@@ -646,9 +634,6 @@ unique_ptr<DuckLakeNameMapEntry> DuckLakeFileProcessor::MapColumn(ParquetFileMet
 	DuckLakeParquetTypeChecker type_checker(table, file_metadata, field_id.Type(), column, prefix);
 	type_checker.CheckMatchingType();
 
-	if (column.field_id.IsValid()) {
-		throw InvalidInputException("File has field ids defined - only mapping by name is supported currently");
-	}
 	if (!prefix.empty()) {
 		prefix += ".";
 	}
@@ -788,10 +773,11 @@ DuckLakeDataFile DuckLakeFileProcessor::AddFileToTable(ParquetFileMetadata &file
 	DuckLakeDataFile result;
 	result.file_name = file.filename;
 	result.row_count = file.row_count.GetIndex();
-	result.file_size_bytes = file.file_size.GetIndex();
+	result.file_size_bytes = file.file_size_bytes.GetIndex();
+	result.footer_size = file.footer_size.GetIndex();
 
 	// map columns from the file to the table
-	auto &field_data = table.GetFieldData();
+	const auto &field_data = table.GetFieldData();
 	auto &field_ids = field_data.GetFieldIds();
 	if (hive_partitioning != HivePartitioningType::NO) {
 		// we are mapping hive partitions - check if there are any hive partitioned columns
@@ -853,6 +839,7 @@ DuckLakeAddDataFilesFunction::DuckLakeAddDataFilesFunction()
 	named_parameters["allow_missing"] = LogicalType::BOOLEAN;
 	named_parameters["ignore_extra_columns"] = LogicalType::BOOLEAN;
 	named_parameters["hive_partitioning"] = LogicalType::BOOLEAN;
+	named_parameters["schema"] = LogicalType::VARCHAR;
 }
 
 } // namespace duckdb

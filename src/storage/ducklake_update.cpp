@@ -15,6 +15,7 @@ DuckLakeUpdate::DuckLakeUpdate(PhysicalPlan &physical_plan, DuckLakeTableEntry &
     : PhysicalOperator(physical_plan, PhysicalOperatorType::EXTENSION, {LogicalType::BIGINT}, 1), table(table),
       columns(std::move(columns_p)), copy_op(copy_op), delete_op(delete_op), insert_op(insert_op) {
 	children.push_back(child);
+	row_id_index = columns.size();
 }
 
 //===--------------------------------------------------------------------===//
@@ -75,8 +76,7 @@ SinkResultType DuckLakeUpdate::Sink(ExecutionContext &context, DataChunk &chunk,
 	for (idx_t i = 0; i < columns.size(); i++) {
 		insert_chunk.data[columns[i].index].Reference(chunk.data[i]);
 	}
-	idx_t row_id_index = columns.size();
-	insert_chunk.data[row_id_index].Reference(chunk.data[row_id_index]);
+	insert_chunk.data[columns.size()].Reference(chunk.data[row_id_index]);
 
 	OperatorSinkInput copy_input {*copy_op.sink_state, *lstate.copy_local_state, input.interrupt_state};
 	copy_op.Sink(context, insert_chunk, copy_input);

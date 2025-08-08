@@ -22,6 +22,18 @@ ALTER TABLE partitioned_tbl SET PARTITIONED BY (part_key);
 statement ok
 INSERT INTO partitioned_tbl SELECT i%2, concat('thisisastring_', i) FROM range(10000) t(i)
 
+statement ok
+ALTER TABLE partitioned_tbl RENAME TO partitioned_tbl_renamed
+
+# check if rename causes partition info to get dropped
+query I
+SELECT COUNT(*) FROM ducklake_metadata.ducklake_partition_info WHERE end_snapshot IS NOT NULL
+----
+0
+
+statement ok
+ALTER TABLE partitioned_tbl_renamed RENAME TO partitioned_tbl
+
 query I
 SELECT COUNT(*) FROM partitioned_tbl WHERE part_key=0
 ----

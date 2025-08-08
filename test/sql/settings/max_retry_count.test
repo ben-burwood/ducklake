@@ -147,6 +147,20 @@ SELECT COUNT() FROM ducklake.tbl;
 ----
 5
 
-# Reset to default
+
 statement ok
-RESET ducklake_max_retry_count;
+SET ducklake_max_retry_count = 1;
+
+concurrentloop i 0 10
+
+statement maybe
+INSERT INTO ducklake.tbl VALUES(${i});
+----
+Exceeded the maximum retry count of 1 set by the ducklake_max_retry_count setting.
+
+endloop
+
+query I
+SELECT COUNT() >= 5 AND COUNT() < 15 FROM ducklake.tbl;
+----
+TRUE

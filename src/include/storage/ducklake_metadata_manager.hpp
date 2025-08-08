@@ -59,7 +59,7 @@ public:
 	virtual vector<DuckLakeFileScheduledForCleanup> GetFilesScheduledForCleanup(const string &filter);
 	virtual void RemoveFilesScheduledForCleanup(const vector<DuckLakeFileScheduledForCleanup> &cleaned_up_files);
 	virtual void DropSchemas(DuckLakeSnapshot commit_snapshot, const set<SchemaIndex> &ids);
-	virtual void DropTables(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids);
+	virtual void DropTables(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids, bool renamed);
 	virtual void DropViews(DuckLakeSnapshot commit_snapshot, const set<TableIndex> &ids);
 	virtual void WriteNewSchemas(DuckLakeSnapshot commit_snapshot, const vector<DuckLakeSchemaInfo> &new_schemas);
 	virtual void WriteNewTables(DuckLakeSnapshot commit_snapshot, const vector<DuckLakeTableInfo> &new_tables);
@@ -90,7 +90,8 @@ public:
 	                                    const vector<DuckLakeColumnMappingInfo> &new_column_mappings);
 	virtual void WriteCompactions(const vector<DuckLakeCompactedFileInfo> &compactions);
 	virtual void InsertSnapshot(DuckLakeSnapshot commit_snapshot);
-	virtual void WriteSnapshotChanges(DuckLakeSnapshot commit_snapshot, const SnapshotChangeInfo &change_info);
+	virtual void WriteSnapshotChanges(DuckLakeSnapshot commit_snapshot, const SnapshotChangeInfo &change_info,
+	                                  const DuckLakeSnapshotCommit &commit_info);
 	virtual void UpdateGlobalTableStats(const DuckLakeGlobalStatsInfo &stats);
 	virtual SnapshotChangeInfo GetChangesMadeAfterSnapshot(DuckLakeSnapshot start_snapshot);
 	virtual unique_ptr<DuckLakeSnapshot> GetSnapshot();
